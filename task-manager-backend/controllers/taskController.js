@@ -2,7 +2,8 @@ const Task = require('../models/Task');
 const Project = require('../models/Project');
 const User = require('../models/User');
 
-// Helper: can the user access this project?
+// helper - check karta hai ki user is project ko access kar sakta hai ya nahi
+// ye function projectController me bhi same hai - shayad future me utils me move karenge
 const canAccessProject = (project, user) => {
   if (user.role === 'admin') return true;
   return project.members.some(
@@ -10,21 +11,20 @@ const canAccessProject = (project, user) => {
   );
 };
 
-// @desc    Create a task (admin only)
-// @route   POST /api/tasks
-// @access  Private/Admin
+// naya task banata hai - sirf admin kar sakta hai
 const createTask = async (req, res) => {
   try {
     const { title, description, project, assignedTo, dueDate, status } =
       req.body;
 
-    // Validate project exists
+    // pehle project verify kar lo - galat id se task ban gaya to orphan ho jayega
     const projectDoc = await Project.findById(project);
     if (!projectDoc) {
       return res.status(404).json({ message: 'Project not found' });
     }
 
-    // If assigning, validate user exists and is a member of the project
+    // agar task kisi ko assign kar rahe hain to do checks - user exist karta hai
+    // aur woh is project ka member hai (admin ko exception diya hai)
     if (assignedTo) {
       const user = await User.findById(assignedTo);
       if (!user) {
@@ -50,6 +50,7 @@ const createTask = async (req, res) => {
       dueDate: dueDate || null,
     });
 
+    // populated response bhej rahe hain taaki frontend pe direct names dikhe
     const populated = await Task.findById(task._id)
       .populate('assignedTo', 'name email')
       .populate('createdBy', 'name email')
@@ -61,15 +62,14 @@ const createTask = async (req, res) => {
   }
 };
 
-// @desc    Get tasks (filtered by project, or all visible to user)
-// @route   GET /api/tasks?project=xxx&status=xxx&assignedTo=me
-// @access  Private
+// tasks ki list - query params se filter ho sakti hai (project, status, assignedTo)
 const getTasks = async (req, res) => {
   try {
     const filter = {};
 
     if (req.query.project) {
-      // Verify access to the project first
+      // project specific tasks chahiye - pehle access verify karo
+      // warna member kisi bhi project ka data dekh leta query me id daal ke
       const projectDoc = await Project.findById(req.query.project);
       if (!projectDoc) {
         return res.status(404).json({ message: 'Project not found' });
@@ -81,17 +81,20 @@ const getTasks = async (req, res) => {
       }
       filter.project = req.query.project;
     } else if (req.user.role !== 'admin') {
-      // Non-admin: only tasks from projects they're a member of
+      // member ne project specify nahi kiya to sirf usi ke projects ke tasks dikhao
+      // pehle uske projects ki ids nikaalo, fir us list me se tasks find karo
       const projects = await Project.find({ members: req.user._id }).select(
         '_id'
       );
       filter.project = { $in: projects.map((p) => p._id) };
     }
 
+    // optional filters - status aur assignedTo
     if (req.query.status) {
       filter.status = req.query.status;
     }
 
+    // 'me' shortcut hai frontend ke liye - apne tasks dekhne ke liye
     if (req.query.assignedTo === 'me') {
       filter.assignedTo = req.user._id;
     } else if (req.query.assignedTo) {
@@ -110,9 +113,7 @@ const getTasks = async (req, res) => {
   }
 };
 
-// @desc    Get task by id
-// @route   GET /api/tasks/:id
-// @access  Private
+// single task by id
 const getTaskById = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id)
@@ -124,6 +125,7 @@ const getTaskById = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
+    // task ka project access check - same logic as project access
     if (!canAccessProject(task.project, req.user)) {
       return res
         .status(403)
@@ -136,9 +138,8 @@ const getTaskById = async (req, res) => {
   }
 };
 
-// @desc    Update task (admin: full update, member: only their own task status)
-// @route   PUT /api/tasks/:id
-// @access  Private
+// task update - sabse complex function hai
+// admin sab kuch update kar sakta hai, member sirf apne assigned task ka status
 const updateTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id).populate('project');
@@ -146,14 +147,16 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
+    // pehle project access check
     if (!canAccessProject(task.project, req.user)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
     const { title, description, assignedTo, dueDate, status } = req.body;
 
-    // Members can ONLY change status, and only on tasks assigned to them
+    // member ke liye strict rules - sirf status, sirf apna task
     if (req.user.role !== 'admin') {
+      // check 1 - kya ye task is member ko hi assigned hai?
       const isAssignedToUser =
         task.assignedTo &&
         task.assignedTo.toString() === req.user._id.toString();
@@ -162,7 +165,10 @@ const updateTask = async (req, res) => {
           message: 'Members can only update tasks assigned to them',
         });
       }
-      // Only status field is allowed for members
+
+      // check 2 - sirf status field allowed hai member ke liye
+      // baaki kuch bhi update karne ki koshish ki to reject
+      // ye important hai - frontend pe button hide kiya hai but API directly hit kar sakta hai
       if (
         title !== undefined ||
         description !== undefined ||
@@ -175,16 +181,18 @@ const updateTask = async (req, res) => {
       }
       if (status !== undefined) task.status = status;
     } else {
-      // Admin can update everything
+      // admin - har field update kar sakta hai
       if (title !== undefined) task.title = title;
       if (description !== undefined) task.description = description;
       if (status !== undefined) task.status = status;
       if (dueDate !== undefined) task.dueDate = dueDate;
 
+      // assignedTo special case - null ya empty string aaye to unassign karna hai
       if (assignedTo !== undefined) {
         if (assignedTo === null || assignedTo === '') {
           task.assignedTo = null;
         } else {
+          // verify user exist karta hai
           const user = await User.findById(assignedTo);
           if (!user) {
             return res
@@ -209,9 +217,7 @@ const updateTask = async (req, res) => {
   }
 };
 
-// @desc    Delete task (admin only)
-// @route   DELETE /api/tasks/:id
-// @access  Private/Admin
+// task delete - admin only
 const deleteTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);

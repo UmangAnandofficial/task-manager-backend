@@ -1,21 +1,19 @@
 const User = require('../models/User');
 const generateToken = require('../utils/generateToken');
 
-// @desc    Register a new user
-// @route   POST /api/auth/signup
-// @access  Public
+// signup route - naya user banata hai
 const signup = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
 
-    // Check if user exists
+    // pehle check kar lo email already use hua hai ya nahi
     const userExists = await User.findOne({ email });
     if (userExists) {
       return res.status(400).json({ message: 'Email already registered' });
     }
 
-    // Note: role from request is allowed only if it's 'member' or not set.
-    // Promoting to admin should be done via seed script or by another admin.
+    // koi bhi signup karke khud ko admin nahi bana sakta
+    // admin sirf seed script se ya existing admin se hi banta hai
     const newUserRole = role === 'admin' ? 'member' : role || 'member';
 
     const user = await User.create({
@@ -25,6 +23,7 @@ const signup = async (req, res) => {
       role: newUserRole,
     });
 
+    // token bhi saath me bhej do taaki frontend pe localStorage me save ho jaye
     res.status(201).json({
       _id: user._id,
       name: user.name,
@@ -37,16 +36,17 @@ const signup = async (req, res) => {
   }
 };
 
-// @desc    Authenticate user
-// @route   POST /api/auth/login
-// @access  Public
+// login - email + password match karke token return karta hai
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // password select:false hai schema me, isliye yahan +password lagana padta hai
     const user = await User.findOne({ email }).select('+password');
 
     if (!user || !(await user.matchPassword(password))) {
+      // dono cases ke liye same message - security ke liye, taaki attacker ko pata na chale
+      // ki email exist karta hai ya nahi
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
@@ -62,9 +62,8 @@ const login = async (req, res) => {
   }
 };
 
-// @desc    Get current logged-in user
-// @route   GET /api/auth/me
-// @access  Private
+// abhi jo user logged in hai uska data return karta hai
+// req.user middleware se aata hai (protect.js)
 const getMe = async (req, res) => {
   res.json(req.user);
 };

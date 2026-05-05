@@ -2,22 +2,25 @@ const Project = require('../models/Project');
 const Task = require('../models/Task');
 const User = require('../models/User');
 
-// Helper: check if user can access a project
+// helper - check karta hai ki user is project ko access kar sakta hai ya nahi
+// admin ko sab kuch dikhta hai, member sirf usi project ko dekh payega jisme woh add kiya gaya hai
 const canAccessProject = (project, user) => {
   if (user.role === 'admin') return true;
+
+  // members array me ObjectId hote hain, isliye toString() karke compare kar rahe hain
+  // warna === se match nahi hota
   return project.members.some(
     (memberId) => memberId.toString() === user._id.toString()
   );
 };
 
-// @desc    Create a new project (admin only)
-// @route   POST /api/projects
-// @access  Private/Admin
+// naya project banata hai - sirf admin kar sakta hai (route me middleware lagi hai)
 const createProject = async (req, res) => {
   try {
     const { name, description, members } = req.body;
 
-    // Validate members exist if provided
+    // agar members bheje gaye hain to verify kar lo ki saare valid users hain
+    // warna fake/galat IDs database me chali jayengi
     if (members && members.length > 0) {
       const validUsers = await User.find({ _id: { $in: members } });
       if (validUsers.length !== members.length) {
@@ -34,6 +37,8 @@ const createProject = async (req, res) => {
       members: members || [],
     });
 
+    // create karne ke baad populated version return kar rahe hain
+    // taaki frontend pe direct user ka name dikha sake instead of just IDs
     const populated = await Project.findById(project._id)
       .populate('createdBy', 'name email')
       .populate('members', 'name email role');
@@ -44,9 +49,8 @@ const createProject = async (req, res) => {
   }
 };
 
-// @desc    Get all projects (admin: all, member: only theirs)
-// @route   GET /api/projects
-// @access  Private
+// saare projects laata hai - role ke hisaab se filter hota hai
+// admin ko poori list, member ko sirf apne wale
 const getProjects = async (req, res) => {
   try {
     const filter =
@@ -55,7 +59,7 @@ const getProjects = async (req, res) => {
     const projects = await Project.find(filter)
       .populate('createdBy', 'name email')
       .populate('members', 'name email role')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 }); // newest first
 
     res.json(projects);
   } catch (error) {
@@ -63,9 +67,7 @@ const getProjects = async (req, res) => {
   }
 };
 
-// @desc    Get single project by id
-// @route   GET /api/projects/:id
-// @access  Private
+// single project ka data - id ke through
 const getProjectById = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id)
@@ -76,6 +78,8 @@ const getProjectById = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
+    // access check - agar member hai aur is project ka part nahi hai to 403
+    // important security check, warna URL me id daal ke koi bhi project dekh leta
     if (!canAccessProject(project, req.user)) {
       return res
         .status(403)
@@ -88,9 +92,7 @@ const getProjectById = async (req, res) => {
   }
 };
 
-// @desc    Update project details (admin only)
-// @route   PUT /api/projects/:id
-// @access  Private/Admin
+// project ka name ya description update karta hai - sirf admin
 const updateProject = async (req, res) => {
   try {
     const { name, description } = req.body;
@@ -100,6 +102,8 @@ const updateProject = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
+    // sirf woh fields update kar rahe hain jo actually bheji gayi hain
+    // undefined check zaroori hai warna empty string bhi accept ho jayegi
     if (name !== undefined) project.name = name;
     if (description !== undefined) project.description = description;
 
@@ -115,13 +119,12 @@ const updateProject = async (req, res) => {
   }
 };
 
-// @desc    Add member to project (admin only)
-// @route   POST /api/projects/:id/members
-// @access  Private/Admin
+// project me naya member add karna - admin only
 const addMember = async (req, res) => {
   try {
     const { userId } = req.body;
 
+    // pehle user ka existence check, fir project ka
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
@@ -132,6 +135,7 @@ const addMember = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
+    // duplicate add hone se rokna - warna ek hi user multiple baar add ho jayega
     if (project.members.some((m) => m.toString() === userId)) {
       return res
         .status(400)
@@ -151,9 +155,7 @@ const addMember = async (req, res) => {
   }
 };
 
-// @desc    Remove member from project (admin only)
-// @route   DELETE /api/projects/:id/members/:userId
-// @access  Private/Admin
+// project se member hata dena - admin only
 const removeMember = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -161,6 +163,7 @@ const removeMember = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
+    // filter se nikaal rahe hain - jis member ki id match nahi karti woh rakh lo
     project.members = project.members.filter(
       (m) => m.toString() !== req.params.userId
     );
@@ -176,9 +179,8 @@ const removeMember = async (req, res) => {
   }
 };
 
-// @desc    Delete project (admin only) - also deletes its tasks
-// @route   DELETE /api/projects/:id
-// @access  Private/Admin
+// project delete - saath me uske saare tasks bhi delete ho jate hain
+// warna orphan tasks reh jayenge database me jo kabhi access nahi honge
 const deleteProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -186,6 +188,7 @@ const deleteProject = async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
+    // pehle tasks delete karo, fir project - cascade delete
     await Task.deleteMany({ project: project._id });
     await project.deleteOne();
 
