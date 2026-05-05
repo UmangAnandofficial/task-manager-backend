@@ -6,9 +6,11 @@ const User = require('../models/User');
 // ye function projectController me bhi same hai - shayad future me utils me move karenge
 const canAccessProject = (project, user) => {
   if (user.role === 'admin') return true;
-  return project.members.some(
-    (memberId) => memberId.toString() === user._id.toString()
-  );
+  return project.members.some((member) => {
+    // member could be a populated User doc OR a raw ObjectId
+    const memberId = member._id ? member._id.toString() : member.toString();
+    return memberId === user._id.toString();
+  });
 };
 
 // naya task banata hai - sirf admin kar sakta hai

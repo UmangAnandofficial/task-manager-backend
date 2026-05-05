@@ -6,14 +6,12 @@ const User = require('../models/User');
 // admin ko sab kuch dikhta hai, member sirf usi project ko dekh payega jisme woh add kiya gaya hai
 const canAccessProject = (project, user) => {
   if (user.role === 'admin') return true;
-
-  // members array me ObjectId hote hain, isliye toString() karke compare kar rahe hain
-  // warna === se match nahi hota
-  return project.members.some(
-    (memberId) => memberId.toString() === user._id.toString()
-  );
+  return project.members.some((member) => {
+    // member could be a populated User doc OR a raw ObjectId
+    const memberId = member._id ? member._id.toString() : member.toString();
+    return memberId === user._id.toString();
+  });
 };
-
 // naya project banata hai - sirf admin kar sakta hai (route me middleware lagi hai)
 const createProject = async (req, res) => {
   try {
