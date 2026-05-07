@@ -3,30 +3,28 @@ const Project = require('../models/Project');
 const User = require('../models/User');
 
 // helper - check karta hai ki user is project ko access kar sakta hai ya nahi
-// ye function projectController me bhi same hai - shayad future me utils me move karenge
 const canAccessProject = (project, user) => {
   if (user.role === 'admin') return true;
   return project.members.some((member) => {
-    // member could be a populated User doc OR a raw ObjectId
+    // member populated ya raw ObjectId dono handle karna padta hai
     const memberId = member._id ? member._id.toString() : member.toString();
     return memberId === user._id.toString();
   });
 };
 
 // naya task banata hai - sirf admin kar sakta hai
+// task default 'new' status me hi banta hai - member ko pehle accept karna hoga
 const createTask = async (req, res) => {
   try {
-    const { title, description, project, assignedTo, dueDate, status } =
-      req.body;
+    const { title, description, project, assignedTo, dueDate } = req.body;
 
-    // pehle project verify kar lo - galat id se task ban gaya to orphan ho jayega
+    // pehle project verify kar lo
     const projectDoc = await Project.findById(project);
     if (!projectDoc) {
       return res.status(404).json({ message: 'Project not found' });
     }
 
-    // agar task kisi ko assign kar rahe hain to do checks - user exist karta hai
-    // aur woh is project ka member hai (admin ko exception diya hai)
+    // agar task kisi ko assign kar rahe hain to validate karo
     if (assignedTo) {
       const user = await User.findById(assignedTo);
       if (!user) {
@@ -42,17 +40,18 @@ const createTask = async (req, res) => {
       }
     }
 
+    // naya task hamesha 'new' status se start hota hai
+    // member accept karega tabhi 'assigned' me jayega
     const task = await Task.create({
       title,
       description: description || '',
       project,
       assignedTo: assignedTo || null,
       createdBy: req.user._id,
-      status: status || 'todo',
+      status: 'new',
       dueDate: dueDate || null,
     });
 
-    // populated response bhej rahe hain taaki frontend pe direct names dikhe
     const populated = await Task.findById(task._id)
       .populate('assignedTo', 'name email')
       .populate('createdBy', 'name email')
@@ -64,14 +63,12 @@ const createTask = async (req, res) => {
   }
 };
 
-// tasks ki list - query params se filter ho sakti hai (project, status, assignedTo)
+// tasks ki list - filter ho sakti hai project, status, assignedTo se
 const getTasks = async (req, res) => {
   try {
     const filter = {};
 
     if (req.query.project) {
-      // project specific tasks chahiye - pehle access verify karo
-      // warna member kisi bhi project ka data dekh leta query me id daal ke
       const projectDoc = await Project.findById(req.query.project);
       if (!projectDoc) {
         return res.status(404).json({ message: 'Project not found' });
@@ -83,20 +80,16 @@ const getTasks = async (req, res) => {
       }
       filter.project = req.query.project;
     } else if (req.user.role !== 'admin') {
-      // member ne project specify nahi kiya to sirf usi ke projects ke tasks dikhao
-      // pehle uske projects ki ids nikaalo, fir us list me se tasks find karo
       const projects = await Project.find({ members: req.user._id }).select(
         '_id'
       );
       filter.project = { $in: projects.map((p) => p._id) };
     }
 
-    // optional filters - status aur assignedTo
     if (req.query.status) {
       filter.status = req.query.status;
     }
 
-    // 'me' shortcut hai frontend ke liye - apne tasks dekhne ke liye
     if (req.query.assignedTo === 'me') {
       filter.assignedTo = req.user._id;
     } else if (req.query.assignedTo) {
@@ -127,7 +120,6 @@ const getTaskById = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // task ka project access check - same logic as project access
     if (!canAccessProject(task.project, req.user)) {
       return res
         .status(403)
@@ -140,8 +132,7 @@ const getTaskById = async (req, res) => {
   }
 };
 
-// task update - sabse complex function hai
-// admin sab kuch update kar sakta hai, member sirf apne assigned task ka status
+// task update - admin sab kuch, member sirf apne task ka status (allowed transitions ke through)
 const updateTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id).populate('project');
@@ -149,16 +140,14 @@ const updateTask = async (req, res) => {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    // pehle project access check
     if (!canAccessProject(task.project, req.user)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
     const { title, description, assignedTo, dueDate, status } = req.body;
 
-    // member ke liye strict rules - sirf status, sirf apna task
     if (req.user.role !== 'admin') {
-      // check 1 - kya ye task is member ko hi assigned hai?
+      // member sirf apne task pe action le sakta hai
       const isAssignedToUser =
         task.assignedTo &&
         task.assignedTo.toString() === req.user._id.toString();
@@ -168,9 +157,7 @@ const updateTask = async (req, res) => {
         });
       }
 
-      // check 2 - sirf status field allowed hai member ke liye
-      // baaki kuch bhi update karne ki koshish ki to reject
-      // ye important hai - frontend pe button hide kiya hai but API directly hit kar sakta hai
+      // member ke liye sirf status field allowed
       if (
         title !== undefined ||
         description !== undefined ||
@@ -181,27 +168,48 @@ const updateTask = async (req, res) => {
           message: 'Members can only update task status',
         });
       }
-      if (status !== undefined) task.status = status;
+
+      // member ke liye status transitions strict hain
+      // accept/reject ke liye alag endpoint hai - yahan se sirf assigned -> in-progress -> resolved
+      if (status !== undefined) {
+        const allowedTransitions = {
+          'assigned': ['in-progress'],
+          'in-progress': ['resolved', 'assigned'], // wapas assigned bhi ja sakta hai agar galti se
+        };
+
+        const allowed = allowedTransitions[task.status];
+        if (!allowed || !allowed.includes(status)) {
+          return res.status(400).json({
+            message: `Cannot move from "${task.status}" to "${status}". Use accept/reject for new tasks.`,
+          });
+        }
+
+        task.status = status;
+      }
     } else {
-      // admin - har field update kar sakta hai
+      // admin sab kuch kar sakta hai - including manually setting any status
       if (title !== undefined) task.title = title;
       if (description !== undefined) task.description = description;
       if (status !== undefined) task.status = status;
       if (dueDate !== undefined) task.dueDate = dueDate;
 
-      // assignedTo special case - null ya empty string aaye to unassign karna hai
       if (assignedTo !== undefined) {
         if (assignedTo === null || assignedTo === '') {
           task.assignedTo = null;
+          // unassign karte hi status wapas 'new' kar do
+          task.status = 'new';
+          task.rejectionReason = null;
         } else {
-          // verify user exist karta hai
           const user = await User.findById(assignedTo);
           if (!user) {
             return res
               .status(404)
               .json({ message: 'Assigned user not found' });
           }
+          // reassign karne pe status wapas 'new' - taaki naya member accept/reject kar sake
           task.assignedTo = assignedTo;
+          task.status = 'new';
+          task.rejectionReason = null;
         }
       }
     }
@@ -214,6 +222,100 @@ const updateTask = async (req, res) => {
       .populate('project', 'name');
 
     res.json(updated);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// member task accept karta hai - 'new' se 'assigned' me move
+const acceptTask = async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.id).populate('project');
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (!canAccessProject(task.project, req.user)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // sirf assigned member hi accept kar sakta hai
+    const isAssignedToUser =
+      task.assignedTo &&
+      task.assignedTo.toString() === req.user._id.toString();
+    if (!isAssignedToUser) {
+      return res.status(403).json({
+        message: 'You can only accept tasks assigned to you',
+      });
+    }
+
+    // sirf 'new' status wala task accept ho sakta hai
+    if (task.status !== 'new') {
+      return res.status(400).json({
+        message: `Task is already in "${task.status}" status`,
+      });
+    }
+
+    task.status = 'assigned';
+    task.rejectionReason = null;
+    await task.save();
+
+    const updated = await Task.findById(task._id)
+      .populate('assignedTo', 'name email')
+      .populate('createdBy', 'name email')
+      .populate('project', 'name');
+
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+// member task reject karta hai - assignment hatti hai, admin reassign karega
+const rejectTask = async (req, res) => {
+  try {
+    const { reason } = req.body;
+
+    const task = await Task.findById(req.params.id).populate('project');
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    if (!canAccessProject(task.project, req.user)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const isAssignedToUser =
+      task.assignedTo &&
+      task.assignedTo.toString() === req.user._id.toString();
+    if (!isAssignedToUser) {
+      return res.status(403).json({
+        message: 'You can only reject tasks assigned to you',
+      });
+    }
+
+    // sirf 'new' wale task reject ho sakte hain
+    // accept karne ke baad reject nahi kar sakte
+    if (task.status !== 'new') {
+      return res.status(400).json({
+        message: 'You can only reject tasks before accepting them',
+      });
+    }
+
+    // assignment clear, status wapas new (par admin ke liye visible)
+    // reason store kar lete hain taaki admin ko pata chale kyon reject hua
+    task.assignedTo = null;
+    task.status = 'new';
+    task.rejectionReason = reason || 'No reason provided';
+    await task.save();
+
+    res.json({
+      message: 'Task rejected. Admin will reassign it.',
+      task: await Task.findById(task._id)
+        .populate('assignedTo', 'name email')
+        .populate('createdBy', 'name email')
+        .populate('project', 'name'),
+    });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -238,5 +340,7 @@ module.exports = {
   getTasks,
   getTaskById,
   updateTask,
+  acceptTask,
+  rejectTask,
   deleteTask,
 };

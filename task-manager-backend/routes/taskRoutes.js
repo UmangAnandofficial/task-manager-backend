@@ -5,6 +5,8 @@ const {
   getTasks,
   getTaskById,
   updateTask,
+  acceptTask,
+  rejectTask,
   deleteTask,
 } = require('../controllers/taskController');
 const { protect, requireAdmin } = require('../middleware/auth');
@@ -22,10 +24,7 @@ router
     [
       body('title').trim().notEmpty().withMessage('Task title is required'),
       body('project').notEmpty().withMessage('Project ID is required'),
-      body('status')
-        .optional()
-        .isIn(['todo', 'in-progress', 'done'])
-        .withMessage('Invalid status'),
+      // status creation pe ignore karenge - hamesha 'new' se start hota hai
       body('dueDate')
         .optional({ nullable: true, checkFalsy: true })
         .isISO8601()
@@ -42,7 +41,7 @@ router
     [
       body('status')
         .optional()
-        .isIn(['todo', 'in-progress', 'done'])
+        .isIn(['new', 'assigned', 'in-progress', 'resolved'])
         .withMessage('Invalid status'),
       body('dueDate')
         .optional({ nullable: true, checkFalsy: true })
@@ -53,5 +52,20 @@ router
     updateTask
   )
   .delete(requireAdmin, deleteTask);
+
+// new lifecycle endpoints - sirf assigned member ke liye
+router.post('/:id/accept', acceptTask);
+router.post(
+  '/:id/reject',
+  [
+    body('reason')
+      .optional()
+      .isString()
+      .isLength({ max: 300 })
+      .withMessage('Reason must be under 300 characters'),
+  ],
+  validate,
+  rejectTask
+);
 
 module.exports = router;

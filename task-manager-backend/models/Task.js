@@ -29,10 +29,20 @@ const taskSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    // new lifecycle: new -> assigned -> in-progress -> resolved
+    // 'new' = task created, member hasn't accepted yet (or unassigned)
+    // 'assigned' = member accepted, hasn't started yet
+    // 'in-progress' = member is actively working
+    // 'resolved' = work complete
     status: {
       type: String,
-      enum: ['todo', 'in-progress', 'done'],
-      default: 'todo',
+      enum: ['new', 'assigned', 'in-progress', 'resolved'],
+      default: 'new',
+    },
+    // optional - track why a task was rejected (helps admin decide reassignment)
+    rejectionReason: {
+      type: String,
+      default: null,
     },
     dueDate: {
       type: Date,
@@ -42,7 +52,6 @@ const taskSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Index for faster dashboard queries
 taskSchema.index({ assignedTo: 1, status: 1 });
 taskSchema.index({ project: 1 });
 
